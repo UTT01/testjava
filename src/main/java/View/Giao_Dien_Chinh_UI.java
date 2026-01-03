@@ -200,7 +200,7 @@ public class Giao_Dien_Chinh_UI extends JFrame {
                 LocalDate thisMonday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
 
                 // 2. Tạo lịch cho tuần này
-               
+               database.ca_lam_query.taoLichCaMacDinhChoTuan(thisMonday);
                // MaCa = ca_lam_query.getMaCaDangMo(MaNv, ngay, caHienTai);
                 // 3. Tạo sẵn lịch cho tuần sau (để nhân viên có thể đăng ký trước)
                 LocalDate nextMonday = thisMonday.plusWeeks(1);

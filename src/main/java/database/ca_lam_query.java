@@ -159,66 +159,75 @@ public static String getTrangThaiCa(java.util.Date ngay, String tenCa) {
 
     // 3. Thực hiện Mở Ca (Update MaNV mở ca và Tiền Két vào bảng Ca, Insert DOANHTHU và DANHSACHHOADON)
     public static boolean thucHienMoCa(String maNV, java.util.Date ngay, String tenCa, int tienKet) {
-        String ngayStr = sdf.format(ngay);
-        
-        // Tạo mã ca
-        String maCa = taoMaCa(ngay, tenCa.equals("Sáng") ? 1 : (tenCa.equals("Chiều") ? 2 : 3));
-        
-        Connection conn = null;
-        try {
-            conn = database.MyConnection.connect();
-            conn.setAutoCommit(false); // Bắt đầu transaction
-            
-            // 1. UPDATE bảng CA
-            String sqlUpdateCa = "UPDATE Ca SET MaNV = ?, MoKet = ?, TrangThai = N'Mở Ca' WHERE Ngay = ? AND Ca = ?";
+    String ngayStr = sdf.format(ngay);
+    String maCa = taoMaCa(ngay, tenCa.equals("Sáng") ? 1 : (tenCa.equals("Chiều") ? 2 : 3));
+    
+    Connection conn = null;
+    try {
+        conn = database.MyConnection.connect();
+        conn.setAutoCommit(false); 
+
+        // --- BƯỚC 1: KIỂM TRA & TỰ ĐỘNG TẠO LỊCH NẾU THIẾU ---
+        boolean caDaTonTai = false;
+        String checkSql = "SELECT COUNT(*) FROM CA WHERE MaCa = ?";
+        try(PreparedStatement psCheck = conn.prepareStatement(checkSql)){
+             psCheck.setString(1, maCa);
+             ResultSet rsCheck = psCheck.executeQuery();
+             if(rsCheck.next()) caDaTonTai = (rsCheck.getInt(1) > 0);
+        }
+
+        if (!caDaTonTai) {
+            // Chưa có lịch -> INSERT mới luôn
+            System.out.println("Phát hiện thiếu lịch -> Đang tự động tạo mới...");
+            String sqlInsertCa = "INSERT INTO CA (MaCa, Ngay, Ca, TrangThai, MoKet, MaNV) VALUES (?, ?, ?, N'Mở Ca', ?, ?)";
+            try (PreparedStatement ps = conn.prepareStatement(sqlInsertCa)) {
+                ps.setString(1, maCa);
+                ps.setString(2, ngayStr);
+                ps.setString(3, tenCa);
+                ps.setInt(4, tienKet);
+                ps.setString(5, maNV);
+                ps.executeUpdate();
+            }
+        } else {
+            // Đã có lịch -> UPDATE trạng thái
+            String sqlUpdateCa = "UPDATE Ca SET MaNV = ?, MoKet = ?, TrangThai = N'Mở Ca' WHERE MaCa = ?";
             try (PreparedStatement ps = conn.prepareStatement(sqlUpdateCa)) {
                 ps.setString(1, maNV);
                 ps.setInt(2, tienKet);
-                ps.setString(3, ngayStr);
-                ps.setString(4, tenCa);
-                int rowsAffected = ps.executeUpdate();
-                if (rowsAffected == 0) {
-                    conn.rollback();
-                    return false;
-                }
-            }
-            
-            // 2. INSERT vào bảng DOANHTHU (Tạo mã DT từ mã ca + tiền mặt ban đầu = tiền kết)
-            String maDT = "DT_0005"; 
-            String sqlInsertDT = "INSERT INTO DOANHTHU (MaDT, MaCa, TienMat, ChuyenKhoan) VALUES (?, ?, ?, 0)";
-            try (PreparedStatement ps = conn.prepareStatement(sqlInsertDT)) {
-                ps.setString(1, maDT);
-                ps.setString(2, maCa);
-                ps.setInt(3, tienKet);
-                ps.executeUpdate();
-            }
-            
-            // 3. INSERT vào bảng DANHSACHHOADON (Tạo danh sách hóa đơn cho ca này)
-            String sqlInsertDSHD = "INSERT INTO DANHSACHHOADON (MaCa) VALUES (?)";
-            try (PreparedStatement ps = conn.prepareStatement(sqlInsertDSHD)) {
-                ps.setString(1, maCa);
-                ps.executeUpdate();
-            }
-            
-            conn.commit(); // Commit transaction
-            return true;
-            
-        } catch (Exception e) {
-            e.printStackTrace();
-            try {
-                if (conn != null) conn.rollback();
-            } catch (SQLException rollbackEx) {
-                rollbackEx.printStackTrace();
-            }
-            return false;
-        } finally {
-            try {
-                if (conn != null) conn.close();
-            } catch (SQLException closeEx) {
-                closeEx.printStackTrace();
+                ps.setString(3, maCa);
+                int rows = ps.executeUpdate();
+                if (rows == 0) { conn.rollback(); return false; }
             }
         }
+        
+        // --- BƯỚC 2: TẠO DOANH THU & DANH SÁCH HÓA ĐƠN ---
+        String maDT = taoMaDoanhThu(); // Hàm bạn đã thêm trước đó
+        
+        String sqlInsertDT = "INSERT INTO DOANHTHU (MaDT, MaCa, TienMat, ChuyenKhoan) VALUES (?, ?, ?, 0)";
+        try (PreparedStatement ps = conn.prepareStatement(sqlInsertDT)) {
+            ps.setString(1, maDT);
+            ps.setString(2, maCa);
+            ps.setInt(3, tienKet);
+            ps.executeUpdate();
+        }
+        
+        String sqlInsertDSHD = "INSERT INTO DANHSACHHOADON (MaCa) VALUES (?)";
+        try (PreparedStatement ps = conn.prepareStatement(sqlInsertDSHD)) {
+            ps.setString(1, maCa);
+            ps.executeUpdate();
+        }
+        
+        conn.commit();
+        return true;
+        
+    } catch (Exception e) {
+        e.printStackTrace();
+        try { if (conn != null) conn.rollback(); } catch (SQLException ex) {}
+        return false;
+    } finally {
+        try { if (conn != null) conn.close(); } catch (SQLException ex) {}
     }
+}
      private static String xacDinhCaHienTai() {
     int hour = LocalDateTime.now().getHour();
 
@@ -227,6 +236,30 @@ public static String getTrangThaiCa(java.util.Date ngay, String tenCa) {
     if (hour >= 18 && hour <= 23) return "Tối";
 
     return null; // ngoài giờ làm
+}
+public static String taoMaDoanhThu() {
+    String prefix = "DT";
+    // Lấy mã DT lớn nhất hiện tại để tăng lên 1
+    String sql = "SELECT TOP 1 MaDT FROM DOANHTHU ORDER BY MaDT DESC";
+    
+    try (java.sql.Connection conn = database.MyConnection.connect();
+         java.sql.PreparedStatement pst = conn.prepareStatement(sql)) {
+        
+        java.sql.ResultSet rs = pst.executeQuery();
+        if (rs.next()) {
+            String maCu = rs.getString("MaDT");
+            // Giả sử mã có dạng DT0001, DT0002...
+            // Cắt chuỗi lấy phần số
+            String phanSo = maCu.substring(2); 
+            int soMoi = Integer.parseInt(phanSo) + 1;
+            // Format lại thành chuỗi, ví dụ DT0006
+            return String.format("%s%04d", prefix, soMoi);
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+    // Nếu bảng chưa có dữ liệu, trả về mã đầu tiên
+    return "DT0001";
 }
     public static String getMaCaDangMo() {
 
